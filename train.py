@@ -257,6 +257,8 @@ def main():
     wandb.init(
         project="faimdl-lab3-tiny-imagenet",
         name=run_name,
+        id=run_name,
+        resume="allow" if args.resume else None,
         config=config
     )
 
