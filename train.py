@@ -114,7 +114,6 @@ def make_run_name(model, optimizer, lr, batch_size, epochs, weight_decay):
         f"{optimizer.lower()}_"
         f"lr{lr_str}_"
         f"bs{batch_size}_"
-        f"ep{epochs}_"
         f"wd{wd_str}"
     )
 
