@@ -203,6 +203,12 @@ def parse_args():
         help="Path to Tiny ImageNet dataset."
     )
 
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from the matching checkpoint if it exist"
+    )
+    
     return parser.parse_args()
 
 
@@ -234,7 +240,8 @@ def main():
         "optimizer": args.optimizer,
         "loss_function": "CrossEntropyLoss",
         "model": args.model,
-        "run_name": run_name
+        "run_name": run_name,
+        "resume": args.resume
     }
 
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
@@ -292,8 +299,37 @@ def main():
     }
 
     best_val_acc = 0.0
+    start_epoch = 1
 
-    for epoch in range(1, config["num_epochs"] + 1):
+    if args.resume and os.path.exists(checkpoint_path):
+        print(f"Resuming training from checkpoint: {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        best_val_acc = checkpoint["best_val_acc"]
+        history = checkpoint["history"]
+        start_epoch = checkpoint["epoch"] + 1
+
+        print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+        print(f"Best validation accuracy so far: {best_val_acc:.2f}%")
+
+    elif args.resume and not os.path.exists(checkpoint_path):
+        print("Resume was requested, but no matching checkpoint was found.")
+        print("Starting training from scratch.")
+
+    if start_epoch > config["num_epochs"]:
+        print(
+            f"Checkpoint is already at epoch {start_epoch - 1}, "
+            f"which is equal to or greater than target epochs={config['num_epochs']}."
+        )
+        print("Nothing to train.")
+        wandb.finish()
+        return
+
+    for epoch in range(start_epoch, config["num_epochs"] + 1):
         print(f"\nEpoch {epoch}/{config['num_epochs']}")
 
         train_loss, train_acc = train_one_epoch(
