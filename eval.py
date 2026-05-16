@@ -1,9 +1,10 @@
+import argparse
 import torch
 from torch import nn
 from tqdm import tqdm
 
 from dataset.tiny_imagenet import get_dataloaders
-from models.custom_net import CustomNet
+from models.model_factory import get_model
 
 
 def evaluate(model, data_loader, criterion, device):
@@ -35,24 +36,63 @@ def evaluate(model, data_loader, criterion, device):
     return avg_loss, accuracy
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Evaluate a saved Tiny ImageNet model checkpoint."
+    )
+
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        required=True,
+        help="Path to the checkpoint file to evaluate."
+    )
+
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="data/tiny-imagenet-200",
+        help="Path to Tiny ImageNet dataset."
+    )
+
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=64,
+        help="Batch size for evaluation."
+    )
+
+    return parser.parse_args()
+
+
 def main():
-    data_dir = "data/tiny-imagenet-200"
-    checkpoint_path = "checkpoints/best_model.pth"
-    batch_size = 64
-    num_classes = 200
+    args = parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
+    print(f"Loading checkpoint from: {args.checkpoint}")
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+
+    config = checkpoint["config"]
+    model_name = checkpoint["model_name"]
+    num_classes = config.get("num_classes", 200)
+
+    print(f"Model name: {model_name}")
+    print(f"Checkpoint epoch: {checkpoint['epoch']}")
+    print(f"Best validation accuracy during training: {checkpoint['best_val_acc']:.2f}%")
+
     _, val_loader = get_dataloaders(
-        data_dir=data_dir,
-        batch_size=batch_size,
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
         num_workers=2
     )
 
-    model = CustomNet(num_classes=num_classes).to(device)
+    model = get_model(
+        model_name=model_name,
+        num_classes=num_classes
+    ).to(device)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     criterion = nn.CrossEntropyLoss()
@@ -64,9 +104,6 @@ def main():
         device=device
     )
 
-    print(f"Loaded checkpoint from: {checkpoint_path}")
-    print(f"Checkpoint epoch: {checkpoint['epoch']}")
-    print(f"Best validation accuracy during training: {checkpoint['best_val_acc']:.2f}%")
     print(f"Evaluation validation loss: {val_loss:.4f}")
     print(f"Evaluation validation accuracy: {val_acc:.2f}%")
 

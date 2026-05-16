@@ -1,3 +1,4 @@
+import argparse
 import os
 import pandas as pd
 import torch
@@ -7,7 +8,7 @@ from tqdm import tqdm
 import wandb
 
 from dataset.tiny_imagenet import get_dataloaders
-from models.custom_net import CustomNet
+from models.model_factory import get_model
 from utils.visualization import plot_training_curves
 
 
@@ -80,7 +81,45 @@ def validate(model, val_loader, criterion, device):
     return val_loss, val_acc
 
 
-def save_experiment_results(history, save_path="results/experiment_results.csv"):
+def build_optimizer(model, optimizer_name, learning_rate, momentum, weight_decay):
+    optimizer_name = optimizer_name.lower()
+
+    if optimizer_name == "sgd":
+        return optim.SGD(
+            model.parameters(),
+            lr=learning_rate,
+            momentum=momentum,
+            weight_decay=weight_decay
+        )
+
+    if optimizer_name == "adam":
+        return optim.Adam(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay
+        )
+
+    raise ValueError(
+        f"Unknown optimizer: {optimizer_name}. "
+        "Available optimizers: SGD, Adam"
+    )
+
+
+def make_run_name(model, optimizer, lr, batch_size, epochs, weight_decay):
+    lr_str = str(lr).replace(".", "p")
+    wd_str = str(weight_decay).replace(".", "p")
+
+    return (
+        f"{model.lower()}_"
+        f"{optimizer.lower()}_"
+        f"lr{lr_str}_"
+        f"bs{batch_size}_"
+        f"ep{epochs}_"
+        f"wd{wd_str}"
+    )
+
+
+def save_experiment_results(history, save_path):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
     results_df = pd.DataFrame({
@@ -94,27 +133,124 @@ def save_experiment_results(history, save_path="results/experiment_results.csv")
     results_df.to_csv(save_path, index=False)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train different CNN models on Tiny ImageNet."
+    )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="customnet",
+        choices=["customnet", "alexnet", "resnet18"],
+        help="Model architecture to train."
+    )
+
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="SGD",
+        choices=["SGD", "Adam"],
+        help="Optimizer to use."
+    )
+
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.001,
+        help="Learning rate."
+    )
+
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=64,
+        help="Batch size."
+    )
+
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=5,
+        help="Number of training epochs."
+    )
+
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.0,
+        help="Weight decay regularization."
+    )
+
+    parser.add_argument(
+        "--momentum",
+        type=float,
+        default=0.9,
+        help="Momentum value for SGD."
+    )
+
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Optional custom Wandb run name."
+    )
+
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="data/tiny-imagenet-200",
+        help="Path to Tiny ImageNet dataset."
+    )
+
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
+    run_name = args.run_name
+
+    if run_name is None:
+        run_name = make_run_name(
+            model=args.model,
+            optimizer=args.optimizer,
+            lr=args.lr,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            weight_decay=args.weight_decay
+        )
+
     config = {
-        "data_dir": "data/tiny-imagenet-200",
+        "data_dir": args.data_dir,
         "checkpoint_dir": "checkpoints",
         "results_dir": "results",
-        "batch_size": 64,
-        "num_epochs": 5,
-        "learning_rate": 0.001,
-        "momentum": 0.9,
+        "batch_size": args.batch_size,
+        "num_epochs": args.epochs,
+        "learning_rate": args.lr,
+        "momentum": args.momentum,
+        "weight_decay": args.weight_decay,
         "num_classes": 200,
-        "optimizer": "SGD",
+        "optimizer": args.optimizer,
         "loss_function": "CrossEntropyLoss",
-        "model": "CustomNet"
+        "model": args.model,
+        "run_name": run_name
     }
 
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
     os.makedirs(config["results_dir"], exist_ok=True)
 
+    run_results_dir = os.path.join(config["results_dir"], run_name)
+    os.makedirs(run_results_dir, exist_ok=True)
+
+    checkpoint_path = os.path.join(
+        config["checkpoint_dir"],
+        f"{run_name}_best.pth"
+    )
+
     wandb.init(
         project="faimdl-lab3-tiny-imagenet",
-        name="customnet_sgd_lr0001_epoch5",
+        name=run_name,
         config=config
     )
 
@@ -131,13 +267,19 @@ def main():
     print(f"Validation dataset size: {len(val_loader.dataset)}")
     print(f"Number of classes: {len(train_loader.dataset.classes)}")
 
-    model = CustomNet(num_classes=config["num_classes"]).to(device)
+    model = get_model(
+        model_name=config["model"],
+        num_classes=config["num_classes"]
+    ).to(device)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(
-        model.parameters(),
-        lr=config["learning_rate"],
-        momentum=config["momentum"]
+
+    optimizer = build_optimizer(
+        model=model,
+        optimizer_name=config["optimizer"],
+        learning_rate=config["learning_rate"],
+        momentum=config["momentum"],
+        weight_decay=config["weight_decay"]
     )
 
     wandb.watch(model, criterion, log="all", log_freq=100)
@@ -192,14 +334,11 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
 
-            checkpoint_path = os.path.join(
-                config["checkpoint_dir"],
-                "best_model.pth"
-            )
-
             torch.save({
                 "epoch": epoch,
+                "model_name": config["model"],
                 "model_state_dict": model.state_dict(),
+                "optimizer_name": config["optimizer"],
                 "optimizer_state_dict": optimizer.state_dict(),
                 "best_val_acc": best_val_acc,
                 "history": history,
@@ -210,11 +349,11 @@ def main():
 
             print(f"Best model saved to {checkpoint_path}")
 
-    plot_training_curves(history, save_dir=config["results_dir"])
+    plot_training_curves(history, save_dir=run_results_dir)
 
     save_experiment_results(
         history,
-        save_path=os.path.join(config["results_dir"], "experiment_results.csv")
+        save_path=os.path.join(run_results_dir, "experiment_results.csv")
     )
 
     wandb.log({
@@ -224,6 +363,7 @@ def main():
     wandb.finish()
 
     print(f"\nBest validation accuracy: {best_val_acc:.2f}%")
+    print(f"Best checkpoint saved at: {checkpoint_path}")
     print("Training completed.")
 
 
